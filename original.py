@@ -2,11 +2,16 @@ import sys
 import serial
 import json
 import time
+import csv
+ 
+from datetime import datetime 
 
 from PySide6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, 
-                               QWidget, QPushButton, QComboBox, QLabel, QDialog, QCheckBox, QScrollArea)
+                               QWidget, QPushButton, QComboBox, QLabel, QDialog, 
+                               QCheckBox, QFileDialog)
 from PySide6.QtCore import QThread, Signal
 import pyqtgraph as pg
+from pyqtgraph.dockarea import DockArea, Dock
 
 NOMBRES_SENALES = [
     "Aceleración X (m/s²)", "Aceleración Y (m/s²)", "Aceleración Z (m/s²)",
@@ -14,7 +19,7 @@ NOMBRES_SENALES = [
 ]
 COLORES = ['r', 'g', 'b', 'c', 'm', 'y', 'w']
 
-# Listener and json writer thread
+ 
 class LectorSerial(QThread):
     datos_recibidos = Signal(list)
 
@@ -36,7 +41,7 @@ class LectorSerial(QThread):
                         if len(valores) == 7: 
                             self.datos_recibidos.emit(valores)
                             
-                            # Quemamos los datos en el archivo JSON
+                             
                             registro = {
                                 "timestamp": time.time(),
                                 "aceleracion": {"x": valores[0], "y": valores[1], "z": valores[2]},
@@ -58,7 +63,7 @@ class LectorSerial(QThread):
         self.wait()
 
 
-# signal configuration window
+ 
 class VentanaSenales(QDialog):
     def __init__(self, estados_actuales, parent=None):
         super().__init__(parent)
@@ -71,7 +76,7 @@ class VentanaSenales(QDialog):
         self.casillas = []
         for i, senal in enumerate(NOMBRES_SENALES):
             checkbox = QCheckBox(senal)
-            checkbox.setChecked(estados_actuales[i]) # Lee si estaba activa o no
+            checkbox.setChecked(estados_actuales[i])
             layout.addWidget(checkbox)
             self.casillas.append(checkbox)
             
@@ -83,30 +88,33 @@ class VentanaSenales(QDialog):
         self.setLayout(layout)
 
 
-# HUD main interface
+ 
 class InterfazDAS(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("DAS HUD - SAE AeroDesign")
-        self.resize(900, 700)
+        self.resize(1200, 700)  
         
-        self.historial_x = list(range(100))
-        # Creamos 7 listas de 100 ceros (una para cada señal)
-        self.historiales = [[0] * 100 for _ in range(7)] 
+        self.tiempo_inicio = time.time()
         
-        # Z accel axis and altitud are visible by default, the rest are hidden
+        self.historial_x = []
+        self.historiales = [[] for _ in range(7)] 
+        
         self.estados_graficas = [False, False, True, False, False, False, True]
         
         self.graficas = []
         self.lineas = []
+        self.docks = [] 
+        self.checks_individuales = [] 
         self.lector = None
+        
         self.init_ui()
 
     def init_ui(self):
         widget_central = QWidget()
         layout_principal = QVBoxLayout()
         
-        # Panel superior
+         
         layout_controles = QHBoxLayout()
         self.combo_puertos = QComboBox()
         self.combo_puertos.setEditable(True) 
@@ -117,79 +125,222 @@ class InterfazDAS(QMainWindow):
         
         self.btn_opciones = QPushButton("+")
         self.btn_opciones.setFixedSize(30, 30)
-        self.btn_opciones.setStyleSheet("font-weight: bold; font-size: 16px;")
         self.btn_opciones.clicked.connect(self.abrir_ventana_senales)
         
-        layout_controles.addWidget(QLabel("Puerto Virtual:"))
+        self.btn_ordenar = QPushButton("Auto-Organizar")
+        self.btn_ordenar.clicked.connect(self.organizar_graficas)
+        
+        self.chk_autoscroll = QCheckBox("Seguir Tiempo Real (Global)")
+        self.chk_autoscroll.setChecked(True)
+        
+        self.btn_exportar = QPushButton("Exportar 💾")
+        self.btn_exportar.clicked.connect(self.exportar_datos)
+        
+         
+        self.chk_ambos = QCheckBox("Exportar al Reiniciar")
+        
+        self.btn_reiniciar = QPushButton("Reiniciar Vuelo 🔄")
+        self.btn_reiniciar.clicked.connect(self.reiniciar_vuelo)
+        
+        self.btn_limpiar = QPushButton("Limpiar Pantalla 🧹")
+        self.btn_limpiar.clicked.connect(self.limpiar_graficas)
+        
+        layout_controles.addWidget(QLabel("Puerto:"))
         layout_controles.addWidget(self.combo_puertos)
         layout_controles.addWidget(self.btn_conectar)
         layout_controles.addWidget(self.btn_opciones)
-        layout_controles.addStretch()
+        layout_controles.addWidget(self.btn_ordenar)
         
+        layout_controles.addSpacing(15) 
+        layout_controles.addWidget(self.chk_autoscroll)
+        layout_controles.addWidget(self.btn_exportar)
+        layout_controles.addWidget(self.chk_ambos)
+        layout_controles.addWidget(self.btn_reiniciar)
+        layout_controles.addWidget(self.btn_limpiar)
+        
+        layout_controles.addStretch()
         layout_principal.addLayout(layout_controles)
         
-        # Panel de Gráficas (con scroll)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        widget_scroll = QWidget()
-        self.layout_graficas = QVBoxLayout(widget_scroll)
+         
+        self.area = DockArea()
+        layout_principal.addWidget(self.area)
         
-       
         for i in range(7):
-            graf = pg.PlotWidget(title=NOMBRES_SENALES[i])
+            widget_dock = QWidget()
+            layout_dock = QVBoxLayout(widget_dock)
+            layout_dock.setContentsMargins(0, 0, 0, 0)
+            layout_dock.setSpacing(0)
+            
+            chk_ind = QCheckBox("Seguir en vivo")
+            chk_ind.setChecked(True)
+            chk_ind.setStyleSheet("color: gray; margin-left: 5px;")
+            self.checks_individuales.append(chk_ind)
+            
+            graf = pg.PlotWidget() 
             graf.setBackground('#1e1e1e')
             graf.showGrid(x=True, y=True)
-            graf.setXRange(0, 100) 
-            graf.setMouseEnabled(x=False, y=True)
-            graf.setMinimumHeight(200) 
+            graf.setLabel('bottom', "Tiempo de Vuelo", units="s")
+            graf.setMouseEnabled(x=True, y=True)
             
             linea = graf.plot(self.historial_x, self.historiales[i], pen=pg.mkPen(COLORES[i], width=2))
             
+            layout_dock.addWidget(chk_ind)
+            layout_dock.addWidget(graf)
+            
+            dock = Dock(NOMBRES_SENALES[i], size=(400, 200))
+            dock.addWidget(widget_dock)
+            
+            self.docks.append(dock)
             self.graficas.append(graf)
             self.lineas.append(linea)
-            self.layout_graficas.addWidget(graf)
             
-            if not self.estados_graficas[i]:
-                graf.hide()
+            if self.estados_graficas[i]:
+                self.area.addDock(dock, 'right')
                 
-        scroll.setWidget(widget_scroll)
-        layout_principal.addWidget(scroll)
-        
         widget_central.setLayout(layout_principal)
         self.setCentralWidget(widget_central)
+
+     
+    def registrar_evento_json(self, tipo_evento):
+        evento = {
+            "evento_sistema": tipo_evento,
+            "timestamp": time.time(),
+            "fecha_hora": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+        try:
+            with open("caja_negra_vuelo.json", "a") as archivo:
+                archivo.write(json.dumps(evento) + "\n")
+        except Exception:
+            pass  
+
+     
+    def limpiar_graficas(self):
+         
+        self.historial_x = []
+        self.historiales = [[] for _ in range(7)]
+        
+        for i in range(7):
+            if self.estados_graficas[i]:
+                self.lineas[i].setData(self.historial_x, self.historiales[i])
+                
+         
+        self.registrar_evento_json("LIMPIEZA_DE_PANTALLA_VISUAL")
+
+    def reiniciar_vuelo(self):
+         
+        if self.chk_ambos.isChecked():
+            guardado_exitoso = self.exportar_datos()
+            if not guardado_exitoso:
+                return 
+
+         
+        self.tiempo_inicio = time.time() 
+        self.historial_x = []
+        self.historiales = [[] for _ in range(7)]
+        
+        for i in range(7):
+            if self.estados_graficas[i]:
+                self.lineas[i].setData(self.historial_x, self.historiales[i])
+                
+         
+        self.registrar_evento_json("REINICIO_DE_VUELO_CRONOMETRO")
+
+    def exportar_datos(self):
+        ruta_archivo, filtro = QFileDialog.getSaveFileName(
+            self, "Exportar Datos en Pantalla", "", "CSV para Excel (*.csv);;Formato JSON (*.json)"
+        )
+        
+        if not ruta_archivo:
+            return False 
+            
+        num_muestras = len(self.historial_x)
+            
+        if "csv" in filtro.lower() or ruta_archivo.endswith(".csv"):
+            with open(ruta_archivo, mode='w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                writer.writerow(["Tiempo (s)"] + NOMBRES_SENALES)
+                for iteracion in range(num_muestras):
+                    fila = [self.historial_x[iteracion]] + [self.historiales[sensor][iteracion] for sensor in range(7)]
+                    writer.writerow(fila)
+        else:
+            datos_json = {"Tiempo (s)": self.historial_x}
+            for j in range(7):
+                datos_json[NOMBRES_SENALES[j]] = self.historiales[j]
+            
+            with open(ruta_archivo, mode='w', encoding='utf-8') as f:
+                json.dump(datos_json, f, indent=4, ensure_ascii=False)
+                
+        self.registrar_evento_json("EXPORTACION_MANUAL_GUARDADA")
+        return True 
 
     def toggle_conexion(self):
         if self.btn_conectar.text() == "Conectar":
             puerto = self.combo_puertos.currentText()
+            
+            self.tiempo_inicio = time.time()
+            self.historial_x = []
+            self.historiales = [[] for _ in range(7)]
+            
             self.lector = LectorSerial(puerto, 115200)
             self.lector.datos_recibidos.connect(self.actualizar_graficas)
             self.lector.start()
             self.btn_conectar.setText("Desconectar")
             self.btn_conectar.setStyleSheet("background-color: #ff4c4c; color: white;")
+            
+             
+            self.registrar_evento_json("INICIO_DE_VUELO_CONEXION")
         else:
             if self.lector:
                 self.lector.detener()
             self.btn_conectar.setText("Conectar")
             self.btn_conectar.setStyleSheet("")
+            
+             
+            self.registrar_evento_json("FIN_DE_VUELO_DESCONEXION")
     
     def abrir_ventana_senales(self):
         ventana = VentanaSenales(self.estados_graficas, self)
-        
         if ventana.exec(): 
             for i, cb in enumerate(ventana.casillas):
-                self.estados_graficas[i] = cb.isChecked()
-                # Mostramos u ocultamos la gráfica según la casilla
-                if self.estados_graficas[i]:
-                    self.graficas[i].show()
-                else:
-                    self.graficas[i].hide()
-    
-    def actualizar_graficas(self, valores):
+                estaba_activa = self.estados_graficas[i]
+                esta_activa = cb.isChecked()
+                self.estados_graficas[i] = esta_activa
+                
+                if esta_activa and not estaba_activa:
+                    self.area.addDock(self.docks[i], 'bottom')
+                elif not esta_activa and estaba_activa:
+                    self.docks[i].close()
+                    
+    def organizar_graficas(self):
+        docks_activos = []
         for i in range(7):
-            self.historiales[i] = self.historiales[i][1:] + [valores[i]]
+            if self.estados_graficas[i]:
+                docks_activos.append(self.docks[i])
+                
+        if not docks_activos: 
+            return 
+            
+        referencia = docks_activos[0]
+        for dock in docks_activos[1:]:
+            self.area.moveDock(dock, 'bottom', referencia)
+            referencia = dock
+            
+        for i in range(1, len(docks_activos), 2):
+            self.area.moveDock(docks_activos[i], 'right', docks_activos[i-1])
+            
+    def actualizar_graficas(self, valores):
+        tiempo_actual = time.time() - self.tiempo_inicio
+        self.historial_x.append(tiempo_actual)
+            
+        for i in range(7):
+            self.historiales[i].append(valores[i])
             
             if self.estados_graficas[i]:
                 self.lineas[i].setData(self.historial_x, self.historiales[i])
+                
+                if self.chk_autoscroll.isChecked() and self.checks_individuales[i].isChecked():
+                    tiempo_minimo = max(0, tiempo_actual - 10)
+                    self.graficas[i].setXRange(tiempo_minimo, tiempo_actual)
 
 if __name__ == "__main__":
     app = QApplication.instance()

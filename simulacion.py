@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+ 
 """
 you must excecute the following command in a terminal to create a virtual serial port:
 socat -d -d pty,raw,echo=0 pty,raw,echo=0
@@ -10,8 +10,7 @@ import serial
 import time
 import random
 
-## Puerto para simulación de socat
-PUERTO = '/dev/pts/7'  
+PUERTO = '/dev/pts/5'  
 BAUD_RATE = 115200 
 
 def generar_datos():
