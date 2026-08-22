@@ -1,4 +1,4 @@
-# Aero Disign
+# AeroDesign
 
 Sistema de adquisición de datos (DAS) desarrollado en Python para AeroDesign. Arquitectura asíncrona de lectura serial, renderizado dinámico con PyQtGraph y guardado continuo en disco duro.
 
