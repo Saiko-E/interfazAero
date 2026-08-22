@@ -5,7 +5,7 @@ Sistema de adquisición de datos (DAS) desarrollado en Python para AeroDesign. A
 ## 🚀 Instalación Rápida (Linux)
 Abre tu terminal, navega a la carpeta donde quieras descargar el proyecto y ejecuta:
 ```bash
-git clone [https://github.com/Saiko-E/interfazAero.git](https://github.com/Saiko-E/interfazAero.git) 
-cd interfazAero/ 
-chmod +x install.sh 
+git clone https://github.com/Saiko-E/interfazAero.git
+cd interfazAero
+chmod +x install.sh
 ./install.sh
